@@ -1,0 +1,220 @@
+# Unofficial build of VIAMD (https://github.com/scanberg/viamd) for Ubuntu 22.04 and 24.04.
+name: Ubuntu
+
+on:
+  workflow_dispatch:
+    inputs:
+      viamd_ref:
+        description: VIAMD branch or tag to build (e.g. master, v0.1.48)
+        type: string
+        default: master
+      simd:
+        description: CPU instruction set to compile for
+        type: choice
+        options: [avx2, avx512, baseline]
+        default: avx2
+
+permissions:
+  contents: read
+
+env:
+  VIAMD_REF: ${{ inputs.viamd_ref }}
+  SIMD: ${{ inputs.simd }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    outputs:
+      commit: ${{ steps.package.outputs.commit }}
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: "Step 2: Install dependencies"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev \
+            libgl-dev libgtk-3-dev pkgconf libhdf5-dev
+          cmake --version
+
+      - name: "Step 1: Clone VIAMD with submodules"
+        run: |
+          git clone --recurse-submodules --depth 1 --shallow-submodules \
+            --branch "$VIAMD_REF" https://github.com/scanberg/viamd.git
+          git -C viamd log -1 --format='Building %H (%cd)'
+
+      - name: "Step 3: Configure with CMake"
+        working-directory: viamd
+        run: |
+          # Pin the instruction set instead of using whatever the runner's CPU supports.
+          case "$SIMD" in
+            avx512)   simd_flags=(-DMD_ENABLE_AVX=ON -DMD_ENABLE_AVX2=ON -DMD_ENABLE_AVX512=ON -DMD_ENABLE_FMA=ON) ;;
+            avx2)     simd_flags=(-DMD_ENABLE_AVX=ON -DMD_ENABLE_AVX2=ON -DMD_ENABLE_AVX512=OFF -DMD_ENABLE_FMA=ON) ;;
+            baseline) simd_flags=(-DMD_ENABLE_AVX=OFF -DMD_ENABLE_AVX2=OFF -DMD_ENABLE_AVX512=OFF -DMD_ENABLE_FMA=OFF) ;;
+            *) echo "::error::Unknown SIMD level '$SIMD'"; exit 1 ;;
+          esac
+          mkdir build
+          cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DVIAMD_ENABLE_QM=ON \
+            "${simd_flags[@]}" \
+            -DVIAMD_UNITTEST=OFF -DMD_UNITTEST=OFF -DMD_BENCHMARK=OFF
+
+      - name: "Step 4: Build"
+        working-directory: viamd/build
+        run: cmake --build . --parallel "$(nproc)"
+
+      - name: Check the binary
+        working-directory: viamd/build/bin
+        run: |
+          file viamd
+          if ldd viamd | grep "not found"; then
+            echo "::error::viamd needs libraries that are not installed"
+            exit 1
+          fi
+          echo "Newest glibc symbol required: $(objdump -T viamd | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n1)"
+
+      - name: Package
+        id: package
+        run: |
+          name="viamd-${{ matrix.os }}-x86_64-${SIMD}"
+          src="$PWD/viamd"
+          cp -r "$src/build/bin" "$name"
+
+          cp "$src/LICENSE" "$name/LICENSE"
+          mkdir "$name/licenses"
+          for f in "$src"/ext/*/LICENSE* "$src"/ext/*/COPYING*; do
+            if [ -f "$f" ]; then
+              cp "$f" "$name/licenses/$(basename "$(dirname "$f")")-$(basename "$f")"
+            fi
+          done
+
+          for so in $(readelf -d "$name/viamd" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p') libGL.so.1; do
+            { dpkg -S "*/$so" 2>/dev/null || true; } | awk -F: 'NR == 1 { print $1 }'
+          done | sort -u > "$name/RUNTIME_PACKAGES.txt"
+
+          cat > "$name/BUILD_INFO.txt" <<EOF
+          Unofficial build of VIAMD: https://github.com/scanberg/viamd
+          Not made or supported by the VIAMD developers.
+
+          VIAMD ref:     $VIAMD_REF
+          VIAMD commit:  $(git -C "$src" rev-parse HEAD)
+          Built on:      $(. /etc/os-release; echo "$PRETTY_NAME") (GitHub runner ${{ matrix.os }})
+          Compiler:      $(gcc --version | head -n1)
+          CMake:         $(cmake --version | head -n1)
+          CPU target:    $SIMD
+          Options:       VIAMD_ENABLE_QM=ON (VeloxChem, TREXIO and H5MD files)
+          Workflow run:  $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          Run-time libraries:
+            sudo apt install $(tr '\n' ' ' < "$name/RUNTIME_PACKAGES.txt")
+
+          Step 5, run it:
+            ./viamd
+          EOF
+
+          tar -czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          echo "archive=$name" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git -C "$src" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          {
+            echo "### $name"
+            echo '```'
+            cat "$name/BUILD_INFO.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Hands the archive to the release job (kept 7 days for debugging). It is a .tar.gz
+      # because artifact zips do not keep the executable bit.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.archive }}
+          path: |
+            ${{ steps.package.outputs.archive }}.tar.gz
+            ${{ steps.package.outputs.archive }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: "Step 5: Run viamd (virtual display, software OpenGL)"
+        working-directory: viamd/build/bin
+        run: |
+          sudo apt-get install -y --no-install-recommends xvfb xauth libgl1-mesa-dri
+          set +e
+          xvfb-run -a -s "-screen 0 1280x800x24" timeout 20 stdbuf -oL -eL ./viamd > "$RUNNER_TEMP/viamd.log" 2>&1
+          status=$?
+          set -e
+          tail -n 30 "$RUNNER_TEMP/viamd.log"
+          if [ "$status" -ne 124 ]; then
+            echo "::error::viamd exited with status $status within 20 seconds"
+            exit 1
+          fi
+
+  # Publishes the archives as assets of a GitHub release in this repository, so they can be
+  # downloaded with a plain URL (and curl). See README-DEV.md for the naming rules.
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VIAMD_COMMIT: ${{ needs.build.outputs.commit }}
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: viamd-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish to a GitHub release
+        run: |
+          upstream_repo=https://github.com/scanberg/viamd
+          if git ls-remote --exit-code --tags "$upstream_repo.git" "refs/tags/$VIAMD_REF" > /dev/null; then
+            # A VIAMD release tag: our release gets the same name, e.g. v0.1.48.
+            tag="$VIAMD_REF"
+            title="VIAMD $VIAMD_REF (unofficial build)"
+            upstream="$upstream_repo/releases/tag/$VIAMD_REF"
+            # Only the newest VIAMD version becomes "Latest" (the target of releases/latest/...).
+            newest=$(git ls-remote --tags --sort=-v:refname "$upstream_repo.git" 'v*' \
+              | awk '!/\^\{\}/ && !found { sub("refs/tags/", "", $2); print $2; found = 1 }')
+            if [ "$tag" = "$newest" ]; then flags=(--latest); else flags=(--latest=false); fi
+          else
+            # A branch such as master: one pre-release per commit, never "Latest".
+            tag="${VIAMD_REF//\//-}-${VIAMD_COMMIT:0:7}"
+            title="VIAMD $VIAMD_REF at ${VIAMD_COMMIT:0:7} (unofficial development build)"
+            upstream="$upstream_repo/commit/$VIAMD_COMMIT"
+            flags=(--prerelease --latest=false)
+          fi
+
+          notes="Unofficial build of VIAMD $VIAMD_REF ($upstream), upstream commit $VIAMD_COMMIT.
+          Not made or supported by the VIAMD developers.
+
+          Installation: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY#readme"
+
+          # The other workflows publish into the same release, so it may already exist,
+          # or be created by one of them at the same moment.
+          if ! gh release view "$tag" > /dev/null 2>&1; then
+            gh release create "$tag" --target "$GITHUB_SHA" --title "$title" --notes "$notes" "${flags[@]}" \
+              || gh release view "$tag" > /dev/null
+          fi
+          # --clobber: rebuilding the same version and CPU level replaces the old files.
+          gh release upload "$tag" dist/* --clobber
+
+          {
+            echo "### Published to release [$tag]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$tag)"
+            for f in dist/*.tar.gz; do
+              echo "- \`curl -fLO $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$tag/$(basename "$f")\`"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

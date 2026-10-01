@@ -1,10 +1,10 @@
 # Unofficial Linux builds of VIAMD
 
-Ready-to-run Linux builds of [VIAMD](https://github.com/scanberg/viamd) (Visual Interactive Analysis of Molecular Dynamics).
+Ready-to-run Linux builds of [VIAMD](https://github.com/scanberg/viamd).
 
 > [!WARNING]
 > **These are unofficial builds.** They are not made, endorsed or supported by the VIAMD developers.
-> For the software itself, its documentation and support, see the [VIAMD repository](https://github.com/scanberg/viamd) and its [wiki](https://github.com/scanberg/viamd/wiki). Problems with these builds (the program won't start, missing libraries) should be reportedhere, not upstream.
+> For the software itself, its documentation and support, see the [VIAMD repository](https://github.com/scanberg/viamd) and its [wiki](https://github.com/scanberg/viamd/wiki). Problems with these builds (the program won't start, missing libraries) should be reported here, not upstream.
 
 ## Install on Debian 12
 

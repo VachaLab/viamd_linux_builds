@@ -38,7 +38,7 @@ jobs:
       commit: ${{ steps.package.outputs.commit }}
 
     steps:
-      - name: "Step 2: Install dependencies"
+      - name: "Install dependencies"
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -54,13 +54,13 @@ jobs:
             | tar -xz -C /opt
           echo "/opt/cmake-${CMAKE_VERSION}-linux-x86_64/bin" >> "$GITHUB_PATH"
 
-      - name: "Step 1: Clone VIAMD with submodules"
+      - name: "Clone VIAMD with submodules"
         run: |
           git clone --recurse-submodules --depth 1 --shallow-submodules \
             --branch "$VIAMD_REF" https://github.com/scanberg/viamd.git
           git -C viamd log -1 --format='Building %H (%cd)'
 
-      - name: "Step 3: Configure with CMake"
+      - name: "Configure with CMake"
         working-directory: viamd
         run: |
           # mdlib otherwise enables whatever the runner's CPU supports (often AVX-512), and the
@@ -81,7 +81,7 @@ jobs:
             "${simd_flags[@]}" \
             -DVIAMD_UNITTEST=OFF -DMD_UNITTEST=OFF -DMD_BENCHMARK=OFF
 
-      - name: "Step 4: Build"
+      - name: "Build"
         working-directory: viamd/build
         run: cmake --build . --parallel "$(nproc)"
 
@@ -135,7 +135,7 @@ jobs:
           Run-time libraries on Debian 12:
             sudo apt install $(tr '\n' ' ' < "$name/RUNTIME_PACKAGES.txt")
 
-          Step 5, run it:
+          Run it as:
             ./viamd
           EOF
 
@@ -150,8 +150,6 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Hands the archive to the next jobs (kept 7 days for debugging). It is a .tar.gz
-      # because artifact zips do not keep the executable bit.
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.package.outputs.archive }}
@@ -161,8 +159,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # A fresh Debian 12 with nothing but the packages from RUNTIME_PACKAGES.txt: checks that the
-  # archive runs on a plain Debian 12 system, not just on the machine that compiled it.
   smoke-test:
     needs: build
     runs-on: ubuntu-latest
@@ -188,7 +184,7 @@ jobs:
           apt-get install -y --no-install-recommends "${runtime_packages[@]}" \
             xvfb xauth libgl1-mesa-dri
 
-      - name: "Step 5: Run viamd (virtual display, software OpenGL)"
+      - name: "Run viamd (virtual display, software OpenGL)"
         run: |
           set +e
           xvfb-run -a -s "-screen 0 1280x800x24" timeout 20 stdbuf -oL -eL "$ARCHIVE/viamd" > viamd.log 2>&1
@@ -202,8 +198,7 @@ jobs:
           fi
           echo "viamd started and was still running after 20 seconds."
 
-  # Publishes the archives as assets of a GitHub release in this repository, so they can be
-  # downloaded with a plain URL (and curl). See README-DEV.md for the naming rules.
+  # Publishes the archives as assets of a GitHub release in this repository.
   release:
     needs: [build, smoke-test] # publish only archives that passed the launch test
     runs-on: ubuntu-latest

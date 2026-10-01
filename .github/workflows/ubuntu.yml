@@ -35,7 +35,7 @@ jobs:
         shell: bash
 
     steps:
-      - name: "Step 2: Install dependencies"
+      - name: "Install dependencies"
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -43,13 +43,13 @@ jobs:
             libgl-dev libgtk-3-dev pkgconf libhdf5-dev
           cmake --version
 
-      - name: "Step 1: Clone VIAMD with submodules"
+      - name: "Clone VIAMD with submodules"
         run: |
           git clone --recurse-submodules --depth 1 --shallow-submodules \
             --branch "$VIAMD_REF" https://github.com/scanberg/viamd.git
           git -C viamd log -1 --format='Building %H (%cd)'
 
-      - name: "Step 3: Configure with CMake"
+      - name: "Configure with CMake"
         working-directory: viamd
         run: |
           # Pin the instruction set instead of using whatever the runner's CPU supports.
@@ -67,7 +67,7 @@ jobs:
             "${simd_flags[@]}" \
             -DVIAMD_UNITTEST=OFF -DMD_UNITTEST=OFF -DMD_BENCHMARK=OFF
 
-      - name: "Step 4: Build"
+      - name: "Build"
         working-directory: viamd/build
         run: cmake --build . --parallel "$(nproc)"
 
@@ -131,8 +131,6 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Hands the archive to the release job (kept 7 days for debugging). It is a .tar.gz
-      # because artifact zips do not keep the executable bit.
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.package.outputs.archive }}
@@ -142,7 +140,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: "Step 5: Run viamd (virtual display, software OpenGL)"
+      - name: "Run viamd (virtual display, software OpenGL)"
         working-directory: viamd/build/bin
         run: |
           sudo apt-get install -y --no-install-recommends xvfb xauth libgl1-mesa-dri
@@ -156,8 +154,7 @@ jobs:
             exit 1
           fi
 
-  # Publishes the archives as assets of a GitHub release in this repository, so they can be
-  # downloaded with a plain URL (and curl). See README-DEV.md for the naming rules.
+  # Publishes the archives as assets of a GitHub release in this repository.
   release:
     needs: build
     runs-on: ubuntu-latest
